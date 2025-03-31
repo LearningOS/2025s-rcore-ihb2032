@@ -1,6 +1,7 @@
 //! Process management syscalls
 use crate::{
-    task::{exit_current_and_run_next, suspend_current_and_run_next},
+    syscall::{SYSCALL_EXIT, SYSCALL_GET_TIME, SYSCALL_TRACE, SYSCALL_YIELD},
+    task::{exit_current_and_run_next, suspend_current_and_run_next, TASK_MANAGER},
     timer::get_time_us,
 };
 
@@ -14,6 +15,7 @@ pub struct TimeVal {
 /// task exits and submit an exit code
 pub fn sys_exit(exit_code: i32) -> ! {
     trace!("[kernel] Application exited with code {}", exit_code);
+    TASK_MANAGER.update_syscall_times(SYSCALL_EXIT);
     exit_current_and_run_next();
     panic!("Unreachable in sys_exit!");
 }
@@ -21,6 +23,7 @@ pub fn sys_exit(exit_code: i32) -> ! {
 /// current task gives up resources for other tasks
 pub fn sys_yield() -> isize {
     trace!("kernel: sys_yield");
+    TASK_MANAGER.update_syscall_times(SYSCALL_YIELD);
     suspend_current_and_run_next();
     0
 }
@@ -28,6 +31,7 @@ pub fn sys_yield() -> isize {
 /// get time with second and microsecond
 pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time");
+    TASK_MANAGER.update_syscall_times(SYSCALL_GET_TIME);
     let us = get_time_us();
     unsafe {
         *ts = TimeVal {
@@ -39,7 +43,25 @@ pub fn sys_get_time(ts: *mut TimeVal, _tz: usize) -> isize {
 }
 
 // TODO: implement the syscall
-pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
+pub fn sys_trace(trace_request: usize, id: usize, data: usize) -> isize {
     trace!("kernel: sys_trace");
-    -1
+    TASK_MANAGER.update_syscall_times(SYSCALL_TRACE);
+    match trace_request {
+        0 => {
+            let addr = id as *const u8;
+            let value = unsafe { addr.read_volatile() };
+            value as isize
+        }
+        1 => {
+            let addr = id as *mut u8;
+            let data_byte = data as u8;
+            unsafe { addr.write_volatile(data_byte) };
+            0
+        }
+        2 => {
+            let current_task = TASK_MANAGER.get_current_task();
+            current_task.syscall_counts[id] as isize
+        }
+        _ => -1,
+    }
 }

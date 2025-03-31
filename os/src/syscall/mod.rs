@@ -23,7 +23,6 @@ const SYSCALL_TRACE: usize = 410;
 
 mod fs;
 mod process;
-
 use fs::*;
 use process::*;
 

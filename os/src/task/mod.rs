@@ -15,13 +15,13 @@ mod switch;
 mod task;
 
 use crate::config::MAX_APP_NUM;
+use crate::config::MAX_SYSCALL_NUM;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+pub use context::TaskContext;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
-
-pub use context::TaskContext;
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -54,6 +54,7 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            syscall_counts: [0; MAX_SYSCALL_NUM]
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -134,6 +135,23 @@ impl TaskManager {
         } else {
             panic!("All applications completed!");
         }
+    }
+
+    /// 获取当前任务
+    pub fn get_current_task(&self) -> TaskControlBlock {
+        let inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task]
+    }
+
+    /// 更新任务次数
+    pub fn update_syscall_times(&self, id: usize) {
+        let mut inner = self.inner.exclusive_access();
+let current_task = inner.current_task;
+if id > 500 {
+    println!("id = {}", id);
+}
+inner.tasks[current_task].syscall_counts[id] += 1;
     }
 }
 
