@@ -147,11 +147,8 @@ impl TaskManager {
     /// 更新任务次数
     pub fn update_syscall_times(&self, id: usize) {
         let mut inner = self.inner.exclusive_access();
-let current_task = inner.current_task;
-if id > 500 {
-    println!("id = {}", id);
-}
-inner.tasks[current_task].syscall_counts[id] += 1;
+        let current_task = inner.current_task;
+        inner.tasks[current_task].syscall_counts[id] += 1;
     }
 }
 
