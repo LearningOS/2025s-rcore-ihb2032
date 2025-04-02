@@ -1,5 +1,10 @@
 //! Process management syscalls
-use crate::task::{change_program_brk, exit_current_and_run_next, suspend_current_and_run_next};
+use crate::{
+    mm::translated_byte_buffer, syscall::SYSCALL_TRACE, task::{
+        change_program_brk, current_user_token, exit_current_and_run_next,
+        suspend_current_and_run_next, TASK_MANAGER,
+    }
+};
 
 #[repr(C)]
 #[derive(Debug)]
@@ -34,10 +39,47 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
 /// HINT: You might reimplement it with virtual memory management.
 pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
     trace!("kernel: sys_trace");
+    TASK_MANAGER.update_syscall_times(SYSCALL_TRACE);
     match _trace_request {
         0 => {
-            let current_task = 
+            let buffers = translated_byte_buffer(current_user_token(), _id as *const u8, 1);
+            if buffers.iter().map(|b| b.len()).sum::<usize>() < 1 {
+                return -1;
+            }
+            let mut value = 0u8;
+            let mut remaining = 1;
+            for buffer in buffers {
+                let copy_len = buffer.len().min(remaining);
+                value = buffer[0];
+                remaining = copy_len;
+                if remaining == 0 {
+                    break;
+                }
+            }
+            value as isize
         }
+        1 => {
+            let data_byte = _data as u8;
+            let buffers = translated_byte_buffer(current_user_token(), _id as *const u8, 1);
+            if buffers.iter().map(|b| b.len()).sum::<usize>() < 1 {
+                return -1;
+            }
+            let mut remaining = 1;
+            for buffer in buffers {
+                let copy_len = buffer.len().min(remaining);
+                buffer[..copy_len].fill(data_byte);
+                remaining = copy_len;
+                if remaining == 0 {
+                    break;
+                }
+            }
+            0
+        }
+        2 => {
+            let current_task = TASK_MANAGER.get_current_task();
+            current_task.syscall_counts[_id] as isize
+        }
+        _ => -1,
     }
 }
 

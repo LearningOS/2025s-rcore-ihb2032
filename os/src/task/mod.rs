@@ -154,6 +154,19 @@ impl TaskManager {
         }
     }
 
+        /// 获取当前任务
+        pub fn get_current_task(&self) -> TaskControlBlock {
+            let inner = self.inner.exclusive_access();
+            let current_task = inner.current_task;
+            inner.tasks[current_task]
+        }
+        
+        /// 更新调用次数
+        pub fn update_syscall_times(&self, syscall_id: usize) {
+            let mut inner = self.inner.exclusive_access();
+            let current_task = inner.current_task;
+            inner.tasks[current_task].syscall_counts[syscall_id] += 1;
+        }
 }
 
 /// Run the first task in task list.
