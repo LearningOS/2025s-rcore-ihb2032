@@ -28,6 +28,7 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+    /// syscall_counts
     pub syscall_counts: [usize; MAX_SYSCALL_NUM],
 }
 
