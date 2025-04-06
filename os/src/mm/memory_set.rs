@@ -5,7 +5,7 @@ use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
 use super::{StepByOne, VPNRange};
 use crate::config::{
-    KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE,
+    KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, PAGE_SIZE_BITS, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE
 };
 use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
@@ -35,13 +35,76 @@ lazy_static! {
 }
 /// address space
 pub struct MemorySet {
-    /// page_table
-    pub page_table: PageTable,
-    /// map_areas
-    pub areas: Vec<MapArea>,
+    page_table: PageTable,
+    areas: Vec<MapArea>,
 }
 
 impl MemorySet {
+    /// mmap
+    pub fn mmap(&mut self, start: usize, len: usize, perm: MapPermission) -> isize {
+        if !VirtAddr::from(start).aligned() {
+            return -1;
+        }
+        let start_va = VirtAddr::from(start);
+        let page_count = (len + PAGE_SIZE - 1) / PAGE_SIZE;
+        let vpns: Vec<_> = (0..page_count)
+            .map(|i| VirtAddr::from(start + i * PAGE_SIZE).floor())
+            .collect();
+        if self.check_one_map(&vpns) {
+            return -1;
+        }
+        self.insert_framed_area(
+            start_va,
+            VirtAddr::from(start + page_count * PAGE_SIZE),
+            perm,
+        );
+        0
+    }
+    /// munmap
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let start_va = VirtAddr::from(start);
+        if !start_va.aligned() {
+            return -1;
+        }
+        let start = start & !((1 << PAGE_SIZE_BITS) - 1);
+        let page_count = (len + PAGE_SIZE - 1) / PAGE_SIZE;
+        let vpns: Vec<_> = (0..page_count)
+            .map(|i| VirtAddr::from(start + i * PAGE_SIZE).floor())
+            .collect();
+        if !self.check_all_map(&vpns) {
+            return -1;
+        }
+        self.remove_framed_pages(&vpns);
+        0
+    }
+    /// check one
+    fn check_one_map(&self, vpns: &[VirtPageNum]) -> bool {
+        vpns.iter().any(|vpn| {
+            self.page_table
+                .translate(*vpn)
+                .map_or(false, |pte| pte.is_valid())
+        })
+    }
+    /// remove frame pages
+    fn remove_framed_pages(&mut self, vpns: &[VirtPageNum]) {
+        for vpn in vpns {
+            if let Some(area) = self
+                .areas
+                .iter_mut()
+                .find(|area| area.vpn_range.get_start() == *vpn)
+            {
+                area.unmap_one(&mut self.page_table, *vpn);
+            } 
+        }
+    }
+    /// check all
+    fn check_all_map(&self, vpns: &[VirtPageNum]) -> bool {
+        vpns.iter().all(|vpn| {
+            self.page_table
+                .translate(*vpn)
+                .map_or(false, |pte| pte.is_valid())
+        })
+    }
     /// Create a new empty `MemorySet`.
     pub fn new_bare() -> Self {
         Self {
@@ -268,11 +331,9 @@ impl MemorySet {
 }
 /// map area structure, controls a contiguous piece of virtual memory
 pub struct MapArea {
-    /// vpn_range
-    pub vpn_range: VPNRange,
+    vpn_range: VPNRange,
     data_frames: BTreeMap<VirtPageNum, FrameTracker>,
-    /// map_type
-    pub map_type: MapType,
+    map_type: MapType,
     map_perm: MapPermission,
 }
 
@@ -319,6 +380,10 @@ impl MapArea {
     }
     /// map
     pub fn map(&mut self, page_table: &mut PageTable) {
+        info!("[my_map] Start mapping VPN range: {:?} to {:?}", 
+        self.vpn_range.get_start(), 
+        self.vpn_range.get_end()
+    );
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }

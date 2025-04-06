@@ -2,14 +2,12 @@
 use core::{mem::size_of, slice::from_raw_parts};
 
 use crate::{
-    config::PAGE_SIZE,
-    mm::{memory_set::MapType, translated_byte_buffer, MapPermission, VirtAddr},
-    syscall::{SYSCALL_GET_TIME, SYSCALL_TRACE},
+    mm::{translated_byte_buffer, PTEFlags, PageTable, VirtAddr},
+    syscall::{SYSCALL_EXIT, SYSCALL_GET_TIME, SYSCALL_MMAP, SYSCALL_MUNMAP, SYSCALL_TRACE, SYSCALL_YIELD},
     task::{
-        change_program_brk, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next, TASK_MANAGER,
+        change_program_brk, current_user_token, exit_current_and_run_next, mmap, munmap, suspend_current_and_run_next, TASK_MANAGER
     },
-    timer::get_time,
+    timer::get_time_us,
 };
 
 #[repr(C)]
@@ -22,6 +20,7 @@ pub struct TimeVal {
 /// task exits and submit an exit code
 pub fn sys_exit(_exit_code: i32) -> ! {
     trace!("kernel: sys_exit");
+    TASK_MANAGER.update_syscall_times(SYSCALL_EXIT);
     exit_current_and_run_next();
     panic!("Unreachable in sys_exit!");
 }
@@ -29,6 +28,7 @@ pub fn sys_exit(_exit_code: i32) -> ! {
 /// current task gives up resources for other tasks
 pub fn sys_yield() -> isize {
     trace!("kernel: sys_yield");
+    TASK_MANAGER.update_syscall_times(SYSCALL_YIELD);
     suspend_current_and_run_next();
     0
 }
@@ -39,22 +39,18 @@ pub fn sys_yield() -> isize {
 pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     trace!("kernel: sys_get_time");
     TASK_MANAGER.update_syscall_times(SYSCALL_GET_TIME);
+    let time_us = get_time_us();
     let kernel_time = TimeVal {
-        sec: get_time() / 1_000_000,
-        usec: get_time() / 1_000_000,
+        sec: time_us / 1_000_000,
+        usec: time_us / 1_000_000,
     };
-    let time_bytes =
-        unsafe { from_raw_parts(&kernel_time as *const _ as *const u8, size_of::<TimeVal>()) };
-    let buffers = translated_byte_buffer(current_user_token(), _ts as *const u8, time_bytes.len());
-    let total_cap: usize = buffers.iter().map(|b| b.len()).sum();
-    if total_cap < buffers.len() {
-        return -1;
-    }
-    let mut copied = 0;
-    for buffer in buffers {
-        let copy_len = buffer.len().min(time_bytes.len() - copied);
-        buffer[..copy_len].copy_from_slice(&time_bytes[copied..copied + copy_len]);
-        copied += copy_len;
+    let mut ptr = &kernel_time as *const TimeVal as usize;
+    let mut buffers =
+        translated_byte_buffer(current_user_token(), _ts as *const u8, size_of::<TimeVal>());
+    for buffer in buffers.iter_mut() {
+        let data = unsafe { from_raw_parts(ptr as *const u8, buffer.len()) };
+        ptr += buffer.len();
+        buffer.copy_from_slice(data);
     }
     0
 }
@@ -66,38 +62,35 @@ pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
     TASK_MANAGER.update_syscall_times(SYSCALL_TRACE);
     match _trace_request {
         0 => {
-            let buffers = translated_byte_buffer(current_user_token(), _id as *const u8, 1);
-            if buffers.iter().map(|b| b.len()).sum::<usize>() < 1 {
-                return -1;
-            }
-            let mut value = 0u8;
-            let mut remaining = 1;
-            for buffer in buffers {
-                let copy_len = buffer.len().min(remaining);
-                value = buffer[0];
-                remaining = copy_len;
-                if remaining == 0 {
-                    break;
+            let vpn = VirtAddr::from(_id as *const u8 as usize).floor();
+            if let Some(pte) = PageTable::from_token(current_user_token()).translate(vpn) {
+                let flags = pte.flags();
+                if pte.is_valid() && (flags & PTEFlags::U) != PTEFlags::empty() && pte.readable() {
+                    let buffers = translated_byte_buffer(
+                        current_user_token(),
+                        _id as *const u8,
+                        size_of::<u8>(),
+                    );
+                    return buffers[0][0] as isize;
                 }
             }
-            value as isize
+            -1
         }
         1 => {
-            let data_byte = _data as u8;
-            let buffers = translated_byte_buffer(current_user_token(), _id as *const u8, 1);
-            if buffers.iter().map(|b| b.len()).sum::<usize>() < 1 {
-                return -1;
-            }
-            let mut remaining = 1;
-            for buffer in buffers {
-                let copy_len = buffer.len().min(remaining);
-                buffer[..copy_len].fill(data_byte);
-                remaining = copy_len;
-                if remaining == 0 {
-                    break;
+            let vpn = VirtAddr::from(_id as *mut u8 as usize).floor();
+            if let Some(pte) = PageTable::from_token(current_user_token()).translate(vpn) {
+                let flags = pte.flags();
+                if pte.is_valid() && (flags & PTEFlags::U) != PTEFlags::empty() && pte.writable() {
+                    let mut buffers = translated_byte_buffer(
+                        current_user_token(),
+                        _id as *mut u8,
+                        size_of::<u8>(),
+                    );
+                    buffers[0][0] = _data as u8;
+                    return 0;
                 }
             }
-            0
+            -1
         }
         2 => TASK_MANAGER.get_syscall_counts(_id),
         _ => -1,
@@ -107,67 +100,15 @@ pub fn sys_trace(_trace_request: usize, _id: usize, _data: usize) -> isize {
 // YOUR JOB: Implement mmap.
 pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
     trace!("kernel: sys_mmap NOT IMPLEMENTED YET!");
-    if _start % PAGE_SIZE != 0 {
-        return -1;
-    }
-    if (_port & !0x7) != 0 || (_port & 0x7) == 0 {
-        return -1;
-    }
-    let len = if _len == 0 {
-        0
-    } else {
-        ((_len + PAGE_SIZE - 1) / PAGE_SIZE) * PAGE_SIZE
-    };
-    if len == 0 {
-        return 0;
-    }
-    let start_va = VirtAddr::from(_start);
-    let end_va = VirtAddr::from(_start + len);
-    let current_task_id = TASK_MANAGER.inner.exclusive_access().current_task;
-    let memory_set = &mut TASK_MANAGER.inner.exclusive_access().tasks[current_task_id].memory_set;
-    let mut map_perm = MapPermission::U;
-    if _port & 0x1 != 0 {
-        map_perm = MapPermission::R;
-    }
-    if _port & 0x2 != 0 {
-        map_perm = MapPermission::W;
-    }
-    if _port & 0x3 != 0 {
-        map_perm = MapPermission::X;
-    }
-    memory_set.insert_framed_area(start_va, end_va, map_perm);
-    0
+    TASK_MANAGER.update_syscall_times(SYSCALL_MMAP);
+    mmap(_start, _len, _port)
 }
 
 // YOUR JOB: Implement munmap.
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
-    if _start % PAGE_SIZE != 0 || _len % PAGE_SIZE != 0 {
-        return -1;
-    }
-    let len = (_len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    if len == 0 {
-        return 0;
-    }
-    let start_va = VirtAddr::from(_start);
-    let end_va = VirtAddr::from(_start + len);
-    let current_task_id = TASK_MANAGER.inner.exclusive_access().current_task;
-    let memory_set = &mut TASK_MANAGER.inner.exclusive_access().tasks[current_task_id].memory_set;
-    let pos = memory_set.areas.iter().position(|area| {
-        area.map_type == MapType::Framed
-            && area.vpn_range.get_start().0 == start_va.0
-            && area.vpn_range.get_end().0 == end_va.0
-    });
-    let pos = match pos {
-        Some(p) => p,
-        None => return -1,
-    };
-    let area = memory_set.areas.swap_remove(pos);
-    let page_table = &mut memory_set.page_table;
-    for vpn in area.vpn_range.into_iter() {
-        page_table.unmap(vpn);
-    }
-    0
+    TASK_MANAGER.update_syscall_times(SYSCALL_MUNMAP);
+munmap(_start, _len)
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {

@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::MapPermission;
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -37,15 +38,15 @@ pub struct TaskManager {
     /// total number of tasks
     num_app: usize,
     /// use inner value to get mutable access
-    pub inner: UPSafeCell<TaskManagerInner>,
+    inner: UPSafeCell<TaskManagerInner>,
 }
 
 /// The task manager inner in 'UPSafeCell'
 pub struct TaskManagerInner {
     /// task list
-    pub tasks: Vec<TaskControlBlock>,
+    tasks: Vec<TaskControlBlock>,
     /// id of current `Running` task
-    pub current_task: usize,
+    current_task: usize,
 }
 
 lazy_static! {
@@ -154,19 +155,52 @@ impl TaskManager {
         }
     }
 
-        /// 获取当前任务
-        pub fn get_syscall_counts(&self, syscall_id: usize) -> isize {
-            let inner = self.inner.exclusive_access();
-            let current_task = inner.current_task;
-            inner.tasks[current_task].syscall_counts[syscall_id] as isize
+    /// 获取当前任务调用次数
+    pub fn get_syscall_counts(&self, syscall_id: usize) -> isize {
+        let inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task].syscall_counts[syscall_id] as isize
+    }
+
+    /// 更新调用次数
+    pub fn update_syscall_times(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        inner.tasks[current_task].syscall_counts[syscall_id] += 1;
+    }
+    /// mmap
+    fn mmap(&self, start: usize, len: usize, prot: usize) -> isize {
+        if (prot & !0x7) != 0 || (prot & 0x7) == 0 {
+            return -1;
         }
-        
-        /// 更新调用次数
-        pub fn update_syscall_times(&self, syscall_id: usize) {
-            let mut inner = self.inner.exclusive_access();
-            let current_task = inner.current_task;
-            inner.tasks[current_task].syscall_counts[syscall_id] += 1;
+        if len == 0 {
+            return 0;
         }
+        let mut perm = MapPermission::U;
+        if (prot & 1) != 0 {
+            perm |= MapPermission::R;
+        }
+        if (prot & 2) != 0 {
+            perm |= MapPermission::W;
+        }
+        if (prot & 4) != 0 {
+            perm |= MapPermission::X;
+        }
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let task = &mut inner.tasks[current];
+        task.memory_set.mmap(start, len, perm)
+    }
+    /// munmap
+    fn munmap(&self, start: usize, len: usize) -> isize {
+        if len == 0 {
+            return 0;
+        }
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let task = &mut inner.tasks[current];
+        task.memory_set.munmap(start, len)
+    }
 }
 
 /// Run the first task in task list.
@@ -215,4 +249,12 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+/// mmap
+pub fn mmap(start: usize, len: usize, prot: usize) -> isize {
+    TASK_MANAGER.mmap(start, len, prot)
+}
+/// munmap
+pub fn munmap(start: usize, len: usize) -> isize {
+    TASK_MANAGER.munmap(start, len)
 }
