@@ -3,9 +3,12 @@ use core::{mem::size_of, slice::from_raw_parts};
 
 use crate::{
     mm::{translated_byte_buffer, PTEFlags, PageTable, VirtAddr},
-    syscall::{SYSCALL_EXIT, SYSCALL_GET_TIME, SYSCALL_MMAP, SYSCALL_MUNMAP, SYSCALL_TRACE, SYSCALL_YIELD},
+    syscall::{
+        SYSCALL_EXIT, SYSCALL_GET_TIME, SYSCALL_MMAP, SYSCALL_MUNMAP, SYSCALL_TRACE, SYSCALL_YIELD,
+    },
     task::{
-        change_program_brk, current_user_token, exit_current_and_run_next, mmap, munmap, suspend_current_and_run_next, TASK_MANAGER
+        change_program_brk, current_user_token, exit_current_and_run_next, mmap, munmap,
+        suspend_current_and_run_next, TASK_MANAGER,
     },
     timer::get_time_us,
 };
@@ -42,7 +45,7 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
     let time_us = get_time_us();
     let kernel_time = TimeVal {
         sec: time_us / 1_000_000,
-        usec: time_us / 1_000_000,
+        usec: time_us % 1_000_000,
     };
     let mut ptr = &kernel_time as *const TimeVal as usize;
     let mut buffers =
@@ -108,7 +111,7 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
 pub fn sys_munmap(_start: usize, _len: usize) -> isize {
     trace!("kernel: sys_munmap NOT IMPLEMENTED YET!");
     TASK_MANAGER.update_syscall_times(SYSCALL_MUNMAP);
-munmap(_start, _len)
+    munmap(_start, _len)
 }
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
