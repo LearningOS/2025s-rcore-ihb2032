@@ -4,7 +4,7 @@ use core::{mem::size_of, slice::from_raw_parts};
 use crate::{
     mm::{translated_byte_buffer, PTEFlags, PageTable, VirtAddr},
     syscall::{
-        SYSCALL_EXIT, SYSCALL_GET_TIME, SYSCALL_MMAP, SYSCALL_MUNMAP, SYSCALL_TRACE, SYSCALL_YIELD,
+        SYSCALL_EXIT, SYSCALL_GET_TIME, SYSCALL_MMAP, SYSCALL_MUNMAP, SYSCALL_SBRK, SYSCALL_TRACE, SYSCALL_YIELD
     },
     task::{
         change_program_brk, current_user_token, exit_current_and_run_next, mmap, munmap,
@@ -116,6 +116,7 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
 /// change data segment size
 pub fn sys_sbrk(size: i32) -> isize {
     trace!("kernel: sys_sbrk");
+    TASK_MANAGER.update_syscall_times(SYSCALL_SBRK);
     if let Some(old_brk) = change_program_brk(size) {
         old_brk as isize
     } else {

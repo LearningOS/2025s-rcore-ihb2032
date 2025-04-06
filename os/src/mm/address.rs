@@ -230,10 +230,6 @@ where
     pub fn get_end(&self) -> T {
         self.r
     }
-    /// Check if two ranges overlap
-    pub fn overlap_with(&self, other: &Self) -> bool {
-        self.l < other.r && self.r > other.l
-    }
 }
 impl<T> IntoIterator for SimpleRange<T>
 where

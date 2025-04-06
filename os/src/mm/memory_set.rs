@@ -42,10 +42,10 @@ pub struct MemorySet {
 impl MemorySet {
     /// mmap
     pub fn mmap(&mut self, start: usize, len: usize, perm: MapPermission) -> isize {
-        if !VirtAddr::from(start).aligned() {
+        let start_va = VirtAddr::from(start);
+        if start_va.aligned() {
             return -1;
         }
-        let start_va = VirtAddr::from(start);
         let page_count = (len + PAGE_SIZE - 1) / PAGE_SIZE;
         let vpns: Vec<_> = (0..page_count)
             .map(|i| VirtAddr::from(start + i * PAGE_SIZE).floor())
