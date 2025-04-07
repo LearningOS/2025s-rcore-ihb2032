@@ -5,7 +5,8 @@ use super::{PTEFlags, PageTable, PageTableEntry};
 use super::{PhysAddr, PhysPageNum, VirtAddr, VirtPageNum};
 use super::{StepByOne, VPNRange};
 use crate::config::{
-    KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, PAGE_SIZE_BITS, TRAMPOLINE, TRAP_CONTEXT_BASE, USER_STACK_SIZE
+    KERNEL_STACK_SIZE, MEMORY_END, PAGE_SIZE, PAGE_SIZE_BITS, TRAMPOLINE, TRAP_CONTEXT_BASE,
+    USER_STACK_SIZE,
 };
 use crate::sync::UPSafeCell;
 use alloc::collections::BTreeMap;
@@ -43,7 +44,7 @@ impl MemorySet {
     /// mmap
     pub fn mmap(&mut self, start: usize, len: usize, perm: MapPermission) -> isize {
         let start_va = VirtAddr::from(start);
-        if start_va.aligned() {
+        if !start_va.aligned() {
             return -1;
         }
         let page_count = (len + PAGE_SIZE - 1) / PAGE_SIZE;
@@ -94,7 +95,7 @@ impl MemorySet {
                 .find(|area| area.vpn_range.get_start() == *vpn)
             {
                 area.unmap_one(&mut self.page_table, *vpn);
-            } 
+            }
         }
     }
     /// check all
@@ -380,10 +381,11 @@ impl MapArea {
     }
     /// map
     pub fn map(&mut self, page_table: &mut PageTable) {
-        info!("[my_map] Start mapping VPN range: {:?} to {:?}", 
-        self.vpn_range.get_start(), 
-        self.vpn_range.get_end()
-    );
+        info!(
+            "[my_map] Start mapping VPN range: {:?} to {:?}",
+            self.vpn_range.get_start(),
+            self.vpn_range.get_end()
+        );
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }
