@@ -67,7 +67,7 @@ impl MemorySet {
         if !start_va.aligned() {
             return -1;
         }
-        let start = start & !((1 << PAGE_SIZE_BITS) - 1);
+        let start = start & ((1 << PAGE_SIZE_BITS) as usize).wrapping_neg();
         let page_count = (len + PAGE_SIZE - 1) / PAGE_SIZE;
         let vpns: Vec<_> = (0..page_count)
             .map(|i| VirtAddr::from(start + i * PAGE_SIZE).floor())
