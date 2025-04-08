@@ -1,15 +1,16 @@
 //! Process management syscalls
-use core::mem::size_of;
+use core::{mem::size_of, slice::from_raw_parts};
 
 use alloc::sync::Arc;
 
 use crate::{
     loader::get_app_data_by_name,
-    mm::{translated_byte_buffer, translated_refmut, translated_str},
+    mm::{translated_byte_buffer, translated_refmut, translated_str, MapPermission},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
-        suspend_current_and_run_next,
-    }, timer::get_time_us,
+        suspend_current_and_run_next, TaskControlBlock,
+    },
+    timer::get_time_us,
 };
 
 #[repr(C)]
@@ -122,13 +123,14 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
         usec: time_us % 1_000_000,
     };
     let mut ptr = &kernel_time as *const TimeVal as usize;
-    let mut buffers = translated_byte_buffer(current_user_token(), _ts as * const u8, size_of::<TimeVal>());
+    let mut buffers =
+        translated_byte_buffer(current_user_token(), _ts as *const u8, size_of::<TimeVal>());
     for buffer in buffers.iter_mut() {
-        let data = unsafe {
-            from_r
-        };
+        let data = unsafe { from_raw_parts(ptr as *const u8, buffer.len()) };
+        ptr += buffer.len();
+        buffer.copy_from_slice(data);
     }
-    -1
+    0
 }
 
 /// YOUR JOB: Implement mmap.
@@ -137,7 +139,25 @@ pub fn sys_mmap(_start: usize, _len: usize, _port: usize) -> isize {
         "kernel:pid[{}] sys_mmap NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if (_port & !0x7) != 0 || (_port & 0x7) == 0 {
+        return -1;
+    }
+    if _len == 0 {
+        return 0;
+    }
+    let mut perm = MapPermission::U;
+    if (_port & 1) != 0 {
+        perm |= MapPermission::R;
+    }
+    if (_port & 2) != 0 {
+        perm |= MapPermission::W;
+    }
+    if (_port & 4) != 0 {
+        perm |= MapPermission::X;
+    }
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.memory_set.mmap(_start, _len, perm)
 }
 
 /// YOUR JOB: Implement munmap.
@@ -146,7 +166,12 @@ pub fn sys_munmap(_start: usize, _len: usize) -> isize {
         "kernel:pid[{}] sys_munmap NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if _len == 0 {
+        return 0;
+    }
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    inner.memory_set.munmap(_start, _len)
 }
 
 /// change data segment size
@@ -166,7 +191,17 @@ pub fn sys_spawn(_path: *const u8) -> isize {
         "kernel:pid[{}] sys_spawn NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let token = current_user_token();
+    let path = translated_str(token, _path);
+    if let Some(elf_data) = get_app_data_by_name(&path) {
+        let current_task = current_task().unwrap();
+        let new_task = TaskControlBlock::spawn(elf_data, &current_task);
+        let new_pid = new_task.pid.0;
+        add_task(new_task);
+        new_pid as isize
+    } else {
+        -1
+    }
 }
 
 // YOUR JOB: Set task priority.
@@ -175,5 +210,10 @@ pub fn sys_set_priority(_prio: isize) -> isize {
         "kernel:pid[{}] sys_set_priority NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    if _prio <= 1 {
+        return -1;
+    }
+    let task = current_task().unwrap();
+    task.priority.store(_prio as usize, core::sync::atomic::Ordering::Relaxed);
+    _prio
 }
