@@ -1,14 +1,13 @@
 //! Process management syscalls
 //!
 use alloc::sync::Arc;
-
 use crate::{
     fs::{open_file, OpenFlags},
-    mm::{translated_refmut, translated_str},
+    mm::{translated_byte_buffer, translated_refmut, translated_str},
     task::{
         add_task, current_task, current_user_token, exit_current_and_run_next,
         suspend_current_and_run_next,
-    },
+    }, timer::get_time_us,
 };
 
 #[repr(C)]
@@ -110,7 +109,20 @@ pub fn sys_get_time(_ts: *mut TimeVal, _tz: usize) -> isize {
         "kernel:pid[{}] sys_get_time NOT IMPLEMENTED",
         current_task().unwrap().pid.0
     );
-    -1
+    let time_us = get_time_us();
+    let kernel_time = TimeVal {
+        sec: time_us / 1_000_000,
+        usec: time_us % 1_000_000,
+    };
+    let mut ptr = &kernel_time as *const TimeVal as usize;
+    let mut buffers =
+        translated_byte_buffer(current_user_token(), _ts as *const u8, s::<TimeVal>());
+    for buffer in buffers.iter_mut() {
+        let data = unsafe { from_raw_parts(ptr as *const u8, buffer.len()) };
+        ptr += buffer.len();
+        buffer.copy_from_slice(data);
+    }
+    0
 }
 
 /// YOUR JOB: Implement mmap.
