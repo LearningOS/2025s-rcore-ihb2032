@@ -10,6 +10,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
+use core::sync::atomic::AtomicUsize;
 
 /// Task control block structure
 ///
@@ -21,7 +22,8 @@ pub struct TaskControlBlock {
 
     /// Kernel stack corresponding to PID
     pub kernel_stack: KernelStack,
-
+    /// priority
+    pub priority: AtomicUsize,
     /// Mutable
     inner: UPSafeCell<TaskControlBlockInner>,
 }
@@ -71,6 +73,10 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+    /// stride
+    pub stride: usize,
+    /// pass
+    pub pass: usize,
 }
 
 impl TaskControlBlockInner {
@@ -115,6 +121,7 @@ impl TaskControlBlock {
         let task_control_block = Self {
             pid: pid_handle,
             kernel_stack,
+            priority: AtomicUsize::new(0),
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
                     trap_cx_ppn,
@@ -135,6 +142,8 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    stride: 0,
+                    pass: 0,
                 })
             },
         };
@@ -200,9 +209,11 @@ impl TaskControlBlock {
                 new_fd_table.push(None);
             }
         }
+        let prio = 
         let task_control_block = Arc::new(TaskControlBlock {
             pid: pid_handle,
             kernel_stack,
+            priority
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
                     trap_cx_ppn,
